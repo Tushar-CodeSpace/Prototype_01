@@ -76,7 +76,7 @@ export const loginController = async (req, res) => {
 
     // password check
     const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) return res.status(401).json({ message: "Invalid credentials" });
+    if (!isPasswordValid) return res.status(401).json({ message: "Incorrect password" });
 
     // generate jwt token
     const token = jwt.sign({ id: user._id, email }, config.jwt_secret, { expiresIn: '7d' });
