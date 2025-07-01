@@ -1,111 +1,111 @@
-import logger from '../utils/logger.js';
-import User from '../models/user.model.js';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import loadAppConfig from '../configs/configLoader.js';
+import { generateToken } from "../lib/utils.js";
+import User from "../models/user.model.js";
+import bcrypt from "bcryptjs";
+import cloudinary from "../lib/cloudinary.js";
 
-export const signupController = async (req, res) => {
-    const config = await loadAppConfig();
+export const signup = async (req, res) => {
     const { fullName, email, password } = req.body;
     try {
-        // request data validation
-        if (!fullName || typeof fullName !== 'string') {
-            return res.status(400).json({ message: "fullName is required and must be a string" });
-        }
-        if (!email || typeof email !== 'string') {
-            return res.status(400).json({ message: "email is required and must be a string" });
-        }
-        if (!password || typeof password !== 'string' || password.length < 6) {
-            return res.status(400).json({ message: "password is required, must be a string, and at least 6 characters long" });
+        if (!fullName || !email || !password) {
+            return res.status(400).json({ message: "All fields are required" });
         }
 
-        // check if user already exists
+        if (password.length < 6) {
+            return res.status(400).json({ message: "Password must be at least 6 characters" });
+        }
+
         const user = await User.findOne({ email });
-        if (user) {
-            return res.status(409).json({ message: "User already exists" });
-        }
 
-        // password hashing
-        const hashedPassword = await bcrypt.hash(password, 10);
+        if (user) return res.status(400).json({ message: "Email already exists" });
 
-        // user creation
-        const newUser = await User.create({
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const newUser = new User({
             fullName,
             email,
-            password: hashedPassword
+            password: hashedPassword,
         });
 
-        // generate jwt token
-        const token = jwt.sign({ id: newUser._id, email }, config.jwt_secret, { expiresIn: '7d' });
+        if (newUser) {
+            // generate jwt token here
+            generateToken(newUser._id, res);
+            await newUser.save();
 
-        // response
-        res
-            .cookie('jwt', token, {
-                httpOnly: true,
-                secure: config.mode !== 'development',
-                sameSite: 'strict',
-                maxAge: 7 * 24 * 60 * 60 * 1000
-            })
-            .status(201)
-            .json({
-                message: `User created`,
-                user_details: {
-                    id: newUser._id,
-                    fullName: newUser.fullName,
-                    email: newUser.email,
-                    token
-                }
+            res.status(201).json({
+                _id: newUser._id,
+                fullName: newUser.fullName,
+                email: newUser.email,
+                profilePic: newUser.profilePic,
             });
+        } else {
+            res.status(400).json({ message: "Invalid user data" });
+        }
     } catch (error) {
-        logger.error(error);
-        return res.status(500).json({ message: "Internal Server Error" });
+        console.log("Error in signup controller", error.message);
+        res.status(500).json({ message: "Internal Server Error" });
     }
 };
 
-export const loginController = async (req, res) => {
-    const config = await loadAppConfig();
+export const login = async (req, res) => {
     const { email, password } = req.body;
+    try {
+        const user = await User.findOne({ email });
 
-    // request data validation
-    if (!email || typeof email !== 'string') return res.status(400).json({ message: "email is required and must be a string" });
-    if (!password || typeof password !== 'string' || password.length < 6) return res.status(400).json({ message: "password is required, must be a string, and at least 6 characters long" });
+        if (!user) {
+            return res.status(400).json({ message: "Invalid credentials" });
+        }
 
-    // user check
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: "User not found" });
+        const isPasswordCorrect = await bcrypt.compare(password, user.password);
+        if (!isPasswordCorrect) {
+            return res.status(400).json({ message: "Invalid credentials" });
+        }
 
-    // password check
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) return res.status(401).json({ message: "Incorrect password" });
+        generateToken(user._id, res);
 
-    // generate jwt token
-    const token = jwt.sign({ id: user._id, email }, config.jwt_secret, { expiresIn: '7d' });
-
-    // response
-    res
-        .cookie('jwt', token, {
-            httpOnly: true,
-            secure: config.mode !== 'development',
-            sameSite: 'strict',
-            maxAge: 7 * 24 * 60 * 60 * 1000
-        })
-        .status(200)
-        .json({
-            message: `User logged in`,
-            user_details: {
-                id: user._id,
-                fullName: user.fullName,
-                email: user.email,
-                token
-            }
+        res.status(200).json({
+            _id: user._id,
+            fullName: user.fullName,
+            email: user.email,
+            profilePic: user.profilePic,
         });
+    } catch (error) {
+        console.log("Error in login controller", error.message);
+        res.status(500).json({ message: "Internal Server Error" });
+    }
 };
 
-export const logoutController = (req, res) => {
-    res
-        .clearCookie('jwt')
-        .status(200)
-        .json({ message: "User logged out" });
+export const logout = (req, res) => {
+    try {
+        res.cookie("jwt", "", { maxAge: 0 });
+        res.status(200).json({ message: "Logged out successfully" });
+    } catch (error) {
+        console.log("Error in logout controller", error.message);
+        res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
+export const updateProfile = async (req, res) => {
+    try {
+        const { profilePic } = req.body;
+        const userId = req.user._id;
+
+        if (!profilePic) {
+            return res.status(400).json({ message: "Profile pic is required" });
+        }
+
+        const uploadResponse = await cloudinary.uploader.upload(profilePic);
+        const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            { profilePic: uploadResponse.secure_url },
+            { new: true }
+        );
+
+        res.status(200).json(updatedUser);
+    } catch (error) {
+        console.log("error in update profile:", error);
+        res.status(500).json({ message: "Internal server error" });
+    }
 };
 
 export const checkAuth = (req, res) => {
